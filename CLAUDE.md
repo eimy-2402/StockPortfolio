@@ -6,8 +6,10 @@ Built against a take-home brief (`TZ_Stock_Portfolio_App.docx`, Ukrainian). **P0
 
 ## Current state
 
-All six phases are built and deployed — the API on Azure Container Apps, the SPA on GitHub Pages. The
-by-hand browser walkthrough against the public URL is the one thing still unproven.
+All six phases are built. **The Azure resources are gone** — the group was deleted on 2026-08-10, so there is
+no live API. The SPA is still on GitHub Pages and errors on every call until a deploy brings the API back. A
+push to `main` rebuilds the whole group from `infra/main.bicep`; nothing has to be done by hand. The by-hand
+browser walkthrough against the public URL is the one thing still unproven, and it needs a deploy first.
 
 **Three degradation behaviours are counter-intuitive, and each has been "corrected" by mistake before.**
 Stopping Redis changes nothing on the dashboard — the provider is asked directly, so the cache was never on
@@ -297,9 +299,11 @@ Three targets: `docker compose` (whole stack, local, the P0 gate), **GitHub Page
 
 **Deploying means pushing to `main`. Nothing else.** `deploy.yml` fires on push to `main` or on manual trigger, and installs Bicep and runs `az deployment group what-if` inside the runner. Having `az` on your own machine only buys a rehearsal — a local `bicep build` and a local `what-if`. Not having it does not block a deploy.
 
-`FINNHUB_API_KEY` is set, so the deployed app serves genuine prices. The secret is optional and defaults to empty. Empty means the public URL prices real tickers from a generated random walk, which reads as broken rather than as a thoughtful fallback. The empty path exists so that `docker compose up` works from a clean clone with no registration, and that is the only place it belongs.
+`FINNHUB_API_KEY` is set in the repository's secrets, so the next deploy serves genuine prices. The secret is optional and defaults to empty. Empty means the public URL prices real tickers from a generated random walk, which reads as broken rather than as a thoughtful fallback. The empty path exists so that `docker compose up` works from a clean clone with no registration, and that is the only place it belongs.
 
-⚠️ **`teardown.yml` deletes the whole resource group once the `deleteAfter` tag passes**, and a redeploy re-stamps it to today + 14 days. The last deploy was 2026-08-07, so the tag reads **2026-08-21**. Deploying extends the window by using it; not deploying lets it expire. An unreadable or missing tag also deletes — deliberate, since a group with no readable deadline is a group nothing is bounding.
+⚠️ **`teardown.yml` deletes the whole resource group once the `deleteAfter` tag passes**, and a redeploy re-stamps it to today + 14 days. Deploying extends the window by using it; not deploying lets it expire. An unreadable or missing tag also deletes — deliberate, since a group with no readable deadline is a group nothing is bounding. It also takes a `force` input that deletes regardless of the tag, and that is what removed the group on 2026-08-10, eleven days before its own deadline.
+
+**What a redeploy brings back, and what it does not.** The resource names are stable: `uniqueString(resourceGroup().id)` reads the subscription and the group's name, neither of which changes, so the same `qdgz3wugqbihs` suffix comes back. **The API's hostname does not.** The middle part of it is the Container Apps environment's own default domain, which Azure generates fresh for every new environment, so the public address after a redeploy is a different one. Nothing has to be edited for that: `deploy.yml` builds the SPA *after* the API and bakes in whatever address it just got. The database is not restored — there is no backup outside the server that was deleted, so every registered user, holding and alert setting is gone, and the migration job recreates empty schemas.
 
 `main.bicep` passes **`minReplicas: 1`**. It passed 0 through Phases 1–3, purely to cut cost on a personal pay-as-you-go subscription, and that was safe only while nothing needed a replica running between requests. Phase 4's quote poller ended it: a sleeping replica samples no prices, so no alert ever fires, and nothing anywhere reports a fault. **The poller and the always-on replica are one decision, not two** — reverting either alone gives a feature that silently stops working whenever traffic does. The rule that keeps them in step is now the other way round: while a `BackgroundService`, `PeriodicTimer` or `IHostedService` exists in `src/`, 1 is correct.
 
@@ -307,7 +311,7 @@ The scale rule's `concurrentRequests` is **400**, raised from 100 in the same ch
 
 The cost of that is a replica billed at the active rate around the clock — an open stream also never qualifies for the platform's reduced idle rate — instead of the cold start `minReplicas: 0` used to buy. The cold start is gone with it, which was the honest cost of the old setting: from zero, the first dashboard request paid container start **and then** the per-ticker fan-out, one after the other.
 
-Cost is bounded by **time, not by budget**. Pay-as-you-go has no Azure spending limit, and a budget only sends email — it cannot stop anything. `deploy.yml` stamps a `deleteAfter` tag on the resource group and `teardown.yml` deletes the group once that date passes. Live deployment: resource group `stockportfolio-rg` in `polandcentral`, ~$1.26/day measured while the API still scaled to zero and higher from the first Phase 4 deploy onwards, API at `stockp-api-qdgz3wugqbihs.icysea-481b5825.polandcentral.azurecontainerapps.io`, SPA at `dilicidum.github.io/StockPortfolio`. Postgres Flexible B1ms and Azure Managed Redis Balanced B0 with HA off — **not** Azure Cache for Redis, which is retiring.
+Cost is bounded by **time, not by budget**. Pay-as-you-go has no Azure spending limit, and a budget only sends email — it cannot stop anything. `deploy.yml` stamps a `deleteAfter` tag on the resource group and `teardown.yml` deletes the group once that date passes. **Nothing is running in Azure right now, so the daily cost is zero.** What a deploy recreates: resource group `stockportfolio-rg` in `polandcentral`, ~$1.26/day measured while the API still scaled to zero and higher from the first Phase 4 deploy onwards, Postgres Flexible B1ms and Azure Managed Redis Balanced B0 with HA off — **not** Azure Cache for Redis, which is retiring. The SPA is at `dilicidum.github.io/StockPortfolio` and is unaffected by a teardown; the API's address is only known after the deploy that creates it.
 
 The SPA and the API are on different origins and always will be, so the alert hub authenticates from the query string rather than a header — which is SignalR's own answer to it, not ours. GitHub Pages needs `404.html` copied from `index.html` plus a Vite `base` and a matching router `basepath`.
 
